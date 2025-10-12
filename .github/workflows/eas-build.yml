@@ -31,10 +31,8 @@ jobs:
       # 5. Expo login
       - name: Expo login
         env:
-          EXPO_USERNAME: ${{ secrets.EXPO_USERNAME }}
-          EXPO_PASSWORD: ${{ secrets.EXPO_PASSWORD }}
-        run: |
-          echo -e "$EXPO_USERNAME\n$EXPO_PASSWORD" | eas login
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas login --token $EXPO_TOKEN
 
       # 6. Trigger EAS Build for Android
       - name: Build APK
