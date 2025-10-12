@@ -9,13 +9,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}  # <-- automatically used by EAS CLI
     steps:
       # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
       # 2. Set up Node.js
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '20'
@@ -28,24 +30,18 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli
 
-      # 5. Expo login
-      - name: Expo login
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas login --token $EXPO_TOKEN
-
-      # 6. Trigger EAS Build for Android
+      # 5. Trigger EAS Build for Android
       - name: Build APK
         run: eas build --platform android --profile production --non-interactive
 
-      # 7. Download APK artifact
+      # 6. Download APK artifact
       - name: Download APK
         run: |
           mkdir -p output
           BUILD_URL=$(eas build:list --platform android --status finished --limit 1 --json | jq -r '.[0].artifacts.buildUrl')
           curl -L $BUILD_URL -o output/app.apk
 
-      # 8. Upload APK as artifact
+      # 7. Upload APK as artifact
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
