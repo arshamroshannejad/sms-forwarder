@@ -1,13 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    Alert,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import { useDarkMode } from '../contexts/DarkModeContext';
 import { useSMSListener } from '../hooks/useSMSListener';
@@ -15,6 +15,7 @@ import { useSMSListener } from '../hooks/useSMSListener';
 export default function HomePage() {
   const [isRunning, setIsRunning] = useState(false);
   const [smsCount, setSmsCount] = useState(0);
+  const [isConfigValid, setIsConfigValid] = useState(false);
   
   // Initialize SMS listener and dark mode
   const smsService = useSMSListener();
@@ -24,14 +25,34 @@ export default function HomePage() {
     loadStatus();
   }, []);
 
+  // Refresh configuration validity when returning to this page
+  useFocusEffect(
+    useCallback(() => {
+      checkConfigurationValidity();
+    }, [])
+  );
+
   const loadStatus = async () => {
     try {
       const running = await AsyncStorage.getItem('smsForwarderRunning');
       const count = await AsyncStorage.getItem('smsForwardedCount');
       setIsRunning(running === 'true');
       setSmsCount(parseInt(count || '0'));
+      
+      // Check configuration validity
+      await checkConfigurationValidity();
     } catch (error) {
       console.error('Error loading status:', error);
+    }
+  };
+
+  const checkConfigurationValidity = async () => {
+    try {
+      const isValid = await smsService.isConfigurationValid();
+      setIsConfigValid(isValid);
+    } catch (error) {
+      console.error('Error checking configuration:', error);
+      setIsConfigValid(false);
     }
   };
 
@@ -40,6 +61,26 @@ export default function HomePage() {
       const newStatus = !isRunning;
       
       if (newStatus) {
+        // Check if configuration is valid before starting
+        const isValid = await smsService.isConfigurationValid();
+        if (!isValid) {
+          Alert.alert(
+            '🔧 Setup Required', 
+            'Please configure SMS forwarding first.\n\nGo to Configuration and set up either:\n• Telegram Bot\n• REST API',
+            [
+              {
+                text: 'Cancel',
+                style: 'cancel'
+              },
+              {
+                text: 'Go to Setup',
+                onPress: () => router.push('/config')
+              }
+            ]
+          );
+          return;
+        }
+        
         await smsService.start();
       } else {
         await smsService.stop();
@@ -48,18 +89,10 @@ export default function HomePage() {
       setIsRunning(newStatus);
     } catch (error) {
       console.error('Error toggling service:', error);
-      Alert.alert('Error', 'Failed to toggle service');
+      // Don't show error alert - just log it silently
     }
   };
 
-  const resetCount = async () => {
-    try {
-      await AsyncStorage.setItem('smsForwardedCount', '0');
-      setSmsCount(0);
-    } catch (error) {
-      console.error('Error resetting count:', error);
-    }
-  };
 
   return (
     <View style={[styles.container, { backgroundColor: isDarkMode ? '#1a1a1a' : '#f8f9fa' }]}>
@@ -86,6 +119,22 @@ export default function HomePage() {
         </View>
       </View>
 
+      {/* Configuration Warning */}
+      {!isConfigValid && (
+        <View style={[styles.warningCard, { backgroundColor: isDarkMode ? '#2d2d2d' : 'white' }]}>
+          <Text style={[styles.warningTitle, { color: isDarkMode ? '#ff6b6b' : '#dc3545' }]}>⚠️ Setup Required</Text>
+          <Text style={[styles.warningText, { color: isDarkMode ? '#cccccc' : '#666' }]}>
+            Configure SMS forwarding to start the service.
+          </Text>
+          <TouchableOpacity 
+            style={[styles.warningButton, { backgroundColor: isDarkMode ? '#4dabf7' : '#007bff' }]}
+            onPress={() => router.push('/config')}
+          >
+            <Text style={styles.warningButtonText}>Setup Now</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <View style={styles.buttonContainer}>
         <TouchableOpacity 
           style={[styles.mainButton, { backgroundColor: isRunning ? '#dc3545' : '#007bff' }]}
@@ -104,13 +153,6 @@ export default function HomePage() {
           onPress={() => router.push('/config')}
         >
           <Text style={[styles.secondaryButtonText, { color: isDarkMode ? '#4dabf7' : '#007bff' }]}>CONFIGURATION</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity 
-          style={styles.resetButton}
-          onPress={resetCount}
-        >
-          <Text style={[styles.resetButtonText, { color: isDarkMode ? '#cccccc' : '#666' }]}>Reset Count</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -225,16 +267,47 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     letterSpacing: 0.3,
   },
-  resetButton: {
-    backgroundColor: 'transparent',
-    paddingVertical: 12,
-    paddingHorizontal: 32,
+  warningCard: {
+    backgroundColor: 'white',
+    padding: 20,
     borderRadius: 12,
+    marginHorizontal: 20,
+    marginBottom: 20,
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    borderLeftWidth: 4,
+    borderLeftColor: '#dc3545',
   },
-  resetButtonText: {
-    color: '#666',
+  warningTitle: {
+    fontSize: 16,
+    fontFamily: 'Inter_700Bold',
+    color: '#dc3545',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  warningText: {
     fontSize: 14,
     fontFamily: 'Inter_400Regular',
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  warningButton: {
+    backgroundColor: '#007bff',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  warningButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
+    letterSpacing: 0.3,
   },
 });

@@ -1,40 +1,59 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    Alert,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Switch,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { useDarkMode } from '../contexts/DarkModeContext';
+import SMSForwarderService, { ErrorEvent } from '../services/SMSForwarderService';
 
 interface ConfigData {
   restApiEnabled: boolean;
   restApiUrl: string;
-  restApiMethod: string;
   restApiHeaders: string;
   telegramEnabled: boolean;
   telegramBotToken: string;
+  telegramChatId: string;
 }
 
 export default function ConfigPage() {
   const [config, setConfig] = useState<ConfigData>({
     restApiEnabled: false,
     restApiUrl: '',
-    restApiMethod: 'POST',
     restApiHeaders: '{"Content-Type": "application/json"}',
     telegramEnabled: false,
     telegramBotToken: '',
+    telegramChatId: '',
   });
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const { isDarkMode } = useDarkMode();
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const smsService = useRef(SMSForwarderService.getInstance());
 
   useEffect(() => {
     loadConfig();
+    
+    // Setup error listener
+    const handleError = (error: ErrorEvent) => {
+      setErrorMessage(error.message);
+    };
+    
+    smsService.current.addErrorListener(handleError);
+    
+    // Cleanup timeout and error listener on unmount
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+      smsService.current.removeErrorListener(handleError);
+    };
   }, []);
 
   const loadConfig = async () => {
@@ -48,26 +67,25 @@ export default function ConfigPage() {
     }
   };
 
-  const saveConfig = async () => {
+  const autoSaveConfig = useCallback(async (configToSave: ConfigData) => {
     try {
-      await AsyncStorage.setItem('smsForwarderConfig', JSON.stringify(config));
-      Alert.alert('Success', 'Configuration saved successfully');
+      await AsyncStorage.setItem('smsForwarderConfig', JSON.stringify(configToSave));
+      console.log('Configuration auto-saved');
     } catch (error) {
-      console.error('Error saving config:', error);
-      Alert.alert('Error', 'Failed to save configuration');
+      console.error('Error auto-saving config:', error);
     }
-  };
+  }, []);
 
   const testRestApi = async () => {
     if (!config.restApiUrl) {
-      Alert.alert('Error', 'Please enter REST API URL');
+      setErrorMessage('Please enter REST API URL');
       return;
     }
 
     try {
       const headers = JSON.parse(config.restApiHeaders);
       const response = await fetch(config.restApiUrl, {
-        method: config.restApiMethod,
+        method: 'POST',
         headers,
         body: JSON.stringify({
           test: true,
@@ -77,23 +95,45 @@ export default function ConfigPage() {
       });
 
       if (response.ok) {
+        setErrorMessage(null);
         Alert.alert('Success', 'REST API test successful');
       } else {
-        Alert.alert('Error', `REST API test failed: ${response.status}`);
+        setErrorMessage(`REST API test failed: ${response.status}`);
+        // Auto-dismiss error after 3 seconds
+        setTimeout(() => setErrorMessage(null), 3000);
       }
     } catch (error) {
-      Alert.alert('Error', `REST API test failed: ${error}`);
+      // Check if it's a network error
+      if (error instanceof TypeError && error.message.includes('Network request failed')) {
+        setErrorMessage('Network Error: Check your internet connection or try using VPN');
+      } else if (error instanceof Error && error.message.includes('fetch')) {
+        setErrorMessage('Network Error: Check your internet connection or try using VPN');
+      } else {
+        setErrorMessage(`REST API test failed: ${error}`);
+      }
+      // Auto-dismiss error after 3 seconds
+      setTimeout(() => setErrorMessage(null), 3000);
     }
   };
 
   const testTelegram = async () => {
     if (!config.telegramBotToken) {
-      Alert.alert('Error', 'Please enter Telegram Bot Token');
+      setErrorMessage('Please enter Telegram Bot Token');
+      // Auto-dismiss error after 3 seconds
+      setTimeout(() => setErrorMessage(null), 3000);
+      return;
+    }
+
+    if (!config.telegramChatId) {
+      setErrorMessage('Please enter Telegram Chat ID');
+      // Auto-dismiss error after 3 seconds
+      setTimeout(() => setErrorMessage(null), 3000);
       return;
     }
 
     try {
-      const response = await fetch(
+      // First test if bot token is valid
+      const botResponse = await fetch(
         `https://api.telegram.org/bot${config.telegramBotToken}/getMe`,
         {
           method: 'GET',
@@ -103,19 +143,72 @@ export default function ConfigPage() {
         }
       );
 
-      const data = await response.json();
-      if (data.ok) {
-        Alert.alert('Success', `Telegram bot test successful!\nBot: @${data.result.username}`);
+      const botData = await botResponse.json();
+      if (!botData.ok) {
+        setErrorMessage(`Invalid bot token: ${botData.description}`);
+        // Auto-dismiss error after 3 seconds
+        setTimeout(() => setErrorMessage(null), 3000);
+        return;
+      }
+
+      // Then test sending a message to the chat
+      const testMessage = `🧪 *Test Message from SMS Forwarder*\n\nThis is a test to verify your configuration is working correctly!`;
+      
+      const messageResponse = await fetch(
+        `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            chat_id: config.telegramChatId,
+            text: testMessage,
+            parse_mode: 'Markdown',
+          }),
+        }
+      );
+
+      const messageData = await messageResponse.json();
+      if (messageData.ok) {
+        setErrorMessage(null);
+        Alert.alert('Success', `Telegram test successful!\nBot: @${botData.result.username}\nTest message sent to chat.`);
       } else {
-        Alert.alert('Error', `Telegram test failed: ${data.description}`);
+        setErrorMessage(`Failed to send test message: ${messageData.description}`);
+        // Auto-dismiss error after 3 seconds
+        setTimeout(() => setErrorMessage(null), 3000);
       }
     } catch (error) {
-      Alert.alert('Error', `Telegram test failed: ${error}`);
+      // Check if it's a network error
+      if (error instanceof TypeError && error.message.includes('Network request failed')) {
+        setErrorMessage('Network Error: Check your internet connection or try using VPN');
+      } else if (error instanceof Error && error.message.includes('fetch')) {
+        setErrorMessage('Network Error: Check your internet connection or try using VPN');
+      } else {
+        setErrorMessage(`Telegram test failed: ${error}`);
+      }
+      // Auto-dismiss error after 3 seconds
+      setTimeout(() => setErrorMessage(null), 3000);
     }
   };
 
+  const dismissError = () => {
+    setErrorMessage(null);
+  };
+
   const updateConfig = (key: keyof ConfigData, value: any) => {
-    setConfig(prev => ({ ...prev, [key]: value }));
+    const newConfig = { ...config, [key]: value };
+    setConfig(newConfig);
+    
+    // Clear existing timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    
+    // Set new timeout for auto-save (500ms delay)
+    saveTimeoutRef.current = setTimeout(() => {
+      autoSaveConfig(newConfig);
+    }, 500);
   };
 
   return (
@@ -153,38 +246,19 @@ export default function ConfigPage() {
               />
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>HTTP Method</Text>
-              <View style={styles.methodContainer}>
-                {['GET', 'POST', 'PUT', 'PATCH'].map((method) => (
-                  <TouchableOpacity
-                    key={method}
-                    style={[
-                      styles.methodButton,
-                      config.restApiMethod === method && styles.methodButtonActive,
-                    ]}
-                    onPress={() => updateConfig('restApiMethod', method)}
-                  >
-                    <Text
-                      style={[
-                        styles.methodButtonText,
-                        config.restApiMethod === method && styles.methodButtonTextActive,
-                      ]}
-                    >
-                      {method}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Headers (JSON)</Text>
+              <Text style={[styles.label, { color: isDarkMode ? '#cccccc' : '#333' }]}>Headers (JSON)</Text>
               <TextInput
-                style={[styles.input, styles.textArea]}
+                style={[styles.input, styles.textArea, { 
+                  backgroundColor: isDarkMode ? '#1a1a1a' : '#f8f9fa',
+                  borderColor: isDarkMode ? '#404040' : '#ddd',
+                  color: isDarkMode ? '#ffffff' : '#333'
+                }]}
                 value={config.restApiHeaders}
                 onChangeText={(value) => updateConfig('restApiHeaders', value)}
                 placeholder='{"Content-Type": "application/json", "Authorization": "Bearer token"}'
+                placeholderTextColor={isDarkMode ? '#888' : '#999'}
                 multiline
                 numberOfLines={3}
               />
@@ -228,6 +302,23 @@ export default function ConfigPage() {
               />
             </View>
 
+            <View style={styles.inputGroup}>
+              <Text style={[styles.label, { color: isDarkMode ? '#cccccc' : '#333' }]}>Chat ID</Text>
+              <TextInput
+                style={[styles.input, { 
+                  backgroundColor: isDarkMode ? '#1a1a1a' : '#f8f9fa',
+                  borderColor: isDarkMode ? '#404040' : '#ddd',
+                  color: isDarkMode ? '#ffffff' : '#333'
+                }]}
+                value={config.telegramChatId}
+                onChangeText={(value) => updateConfig('telegramChatId', value)}
+                placeholder="123456789 or @username"
+                placeholderTextColor={isDarkMode ? '#888' : '#999'}
+                autoCapitalize="none"
+                keyboardType="default"
+              />
+            </View>
+
             <TouchableOpacity style={styles.testButton} onPress={testTelegram}>
               <Text style={styles.testButtonText}>Test Telegram</Text>
             </TouchableOpacity>
@@ -235,16 +326,24 @@ export default function ConfigPage() {
         )}
       </View>
 
-      {/* Save Button */}
-      <TouchableOpacity style={styles.saveButton} onPress={saveConfig}>
-        <Text style={styles.saveButtonText}>Save Configuration</Text>
-      </TouchableOpacity>
-
       <View style={styles.footer}>
         <Text style={styles.footerText}>
-          Make sure to test your configuration before starting the service.
+          Configuration is automatically saved as you type. Test your settings before starting the service.
         </Text>
       </View>
+
+      {/* Error Banner - Centered */}
+      {errorMessage && (
+        <View style={styles.errorContainer}>
+          <View style={[styles.errorBanner, { backgroundColor: isDarkMode ? '#dc3545' : '#dc3545' }]}>
+            <Text style={styles.errorIcon}>⚠️</Text>
+            <Text style={styles.errorText}>{errorMessage}</Text>
+            <TouchableOpacity onPress={dismissError} style={styles.errorDismissButton}>
+              <Text style={styles.errorDismissText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -302,30 +401,6 @@ const styles = StyleSheet.create({
     height: 80,
     textAlignVertical: 'top',
   },
-  methodContainer: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  methodButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    backgroundColor: '#f8f9fa',
-  },
-  methodButtonActive: {
-    backgroundColor: '#007bff',
-    borderColor: '#007bff',
-  },
-  methodButtonText: {
-    fontSize: 14,
-    fontFamily: 'Inter_600SemiBold',
-    color: '#666',
-  },
-  methodButtonTextActive: {
-    color: 'white',
-  },
   testButton: {
     backgroundColor: '#28a745',
     paddingVertical: 12,
@@ -340,25 +415,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_700Bold',
     letterSpacing: 0.3,
   },
-  saveButton: {
-    backgroundColor: '#007bff',
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    borderRadius: 12,
-    alignItems: 'center',
-    margin: 15,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  saveButtonText: {
-    color: 'white',
-    fontSize: 18,
-    fontFamily: 'Inter_700Bold',
-    letterSpacing: 0.5,
-  },
   footer: {
     padding: 20,
     alignItems: 'center',
@@ -370,5 +426,52 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontStyle: 'italic',
     lineHeight: 20,
+  },
+  errorContainer: {
+    position: 'absolute',
+    top: '50%',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+    paddingHorizontal: 20,
+  },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#dc3545',
+    minWidth: 280,
+    maxWidth: '90%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  errorIcon: {
+    fontSize: 20,
+    marginRight: 12,
+  },
+  errorText: {
+    flex: 1,
+    fontSize: 15,
+    fontFamily: 'Inter_500Medium',
+    color: 'white',
+    lineHeight: 20,
+    textAlign: 'center',
+  },
+  errorDismissButton: {
+    padding: 8,
+    marginLeft: 12,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  errorDismissText: {
+    fontSize: 16,
+    color: 'white',
+    fontWeight: 'bold',
   },
 });

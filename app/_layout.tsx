@@ -1,8 +1,9 @@
 import { Inter_400Regular, Inter_600SemiBold, Inter_700Bold, useFonts } from '@expo-google-fonts/inter';
 import { Stack } from "expo-router";
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity } from "react-native";
+import SplashScreenComponent from "../components/SplashScreen";
 import { DarkModeProvider, useDarkMode } from "../contexts/DarkModeContext";
 
 function HeaderRight() {
@@ -65,6 +66,7 @@ export default function RootLayout() {
     Inter_600SemiBold,
     Inter_700Bold,
   });
+  const [showSplash, setShowSplash] = useState(true);
 
   useEffect(() => {
     if (fontsLoaded) {
@@ -72,8 +74,16 @@ export default function RootLayout() {
     }
   }, [fontsLoaded]);
 
+  const handleSplashFinish = () => {
+    setShowSplash(false);
+  };
+
   if (!fontsLoaded) {
     return null;
+  }
+
+  if (showSplash) {
+    return <SplashScreenComponent onAnimationFinish={handleSplashFinish} />;
   }
 
   return (
